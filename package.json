@@ -1,0 +1,30 @@
+{
+  "name": "flashlab",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @flashlab/api --filter @flashlab/storefront dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @flashlab/api test",
+    "start": "pnpm --parallel --filter @flashlab/api --filter @flashlab/storefront start",
+    "lint": "pnpm -r lint",
+    "db:up": "docker compose up -d --wait db test-db",
+    "db:generate": "pnpm --filter @flashlab/api db:generate",
+    "db:migrate": "pnpm --filter @flashlab/api db:migrate",
+    "db:seed": "pnpm --filter @flashlab/api db:seed",
+    "test:e2e": "pnpm --filter @flashlab/storefront test:e2e",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "globals": "^16.0.0",
+    "prettier": "3.8.2",
+    "typescript-eslint": "^8.0.0"
+  }
+}

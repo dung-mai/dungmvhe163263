@@ -1,0 +1,13 @@
+packages:
+  - apps/*
+  - packages/*
+minimumReleaseAgeExclude:
+  - '@nestjs/common@12.3.2'
+  - '@nestjs/core@12.3.2'
+  - '@nestjs/platform-express@12.3.2'
+allowBuilds:
+  '@prisma/engines': true
+  prisma: true
+  esbuild: true
+  unrs-resolver: true
+  '@scarf/scarf': false
