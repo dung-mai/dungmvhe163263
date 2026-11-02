@@ -1,0 +1,49 @@
+# AI delivery flow v1 — read by the intake skill and by humans.
+# One flow, several profiles. Risk triggers always win over the profile.
+
+profiles:
+  vibe:       # small internal tools, prototypes
+    lanes: [intake, define+design, build, verify, retro]   # define and design merged into one short plan
+    gates: [G2]                                            # one approval: the plan
+  standard:   # normal feature in a real product (default for flashlab)
+    lanes: [intake, define, design, test-plan, build, verify, pr, retro]
+    gates: [G1+G2, G3]                                     # scope+design approved together, then merge
+  full:       # large / client-facing / regulated
+    lanes: [intake, define, design, test-plan, build, verify, security, pr, release, retro]
+    gates: [G1, G2, G3]
+
+default_profile: standard
+
+# If the change touches any of these, switch the listed steps ON regardless of profile.
+risk_triggers:
+  auth_or_roles:
+    paths: ["apps/api/src/**/auth/**", "apps/api/src/**/user*/**", "apps/storefront/**/admin/**", "**/middleware.ts"]
+    keywords: [login, password, role, admin, session, jwt, token, permission]
+    turn_on: [security, e2e]
+  money:
+    paths: ["**/pricing/**", "**/promotion*/**", "**/checkout/**", "**/cart/**", "packages/contracts/**/money*"]
+    keywords: [price, discount, checkout, payment, VND]
+    turn_on: [security, e2e, design]
+  data_model:
+    paths: ["apps/api/prisma/schema.prisma"]
+    turn_on: [design]
+  public_contract:
+    paths: ["packages/contracts/**"]
+    turn_on: [design]
+
+lanes:
+  intake:     { role: Router,        skill: intake,          out: [brief.md] }
+  define:     { role: BA/PO,         skill: define,          out: [spec.md],              gate: G1 }
+  design:     { role: TL/SA,         skill: design,          out: [design.md, plan.md],   gate: G2 }
+  test-plan:  { role: QA,            skill: test-plan,       out: [test-plan.md],         parallel_with: build }
+  build:      { role: Developer,     skill: build,           out: [commits],              gate: "CI: pnpm verify" }
+  verify:     { role: QA + Reviewer, skill: verify,          out: [review.md, evidence/] }
+  security:   { role: Security,      skill: security-review, out: [security.md] }
+  pr:         { role: PR agent,      skill: create-pr,       out: [pr.md],                gate: G3 }
+  release:    { role: DevOps,        skill: null,            note: "v2 — not implemented" }
+  retro:      { role: Everyone,      skill: retro,           out: [journal entries, rule/skill/test proposals] }
+
+gates:
+  G1: "Scope approved (you / PO / client)"
+  G2: "Design + plan approved (TL/SA = you for now)"
+  G3: "PR reviewed and merged (you)"

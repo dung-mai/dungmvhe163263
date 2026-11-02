@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to ~/.config/flashlab-ai/claude-deepseek.settings.json (NOT inside the repo), put your key, then: claude --settings ~/.config/flashlab-ai/claude-deepseek.settings.json. Docs: https://api-docs.deepseek.com/guides/anthropic_api",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "sk-REPLACE_WITH_YOUR_DEEPSEEK_KEY",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro",
+    "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-v4-flash",
+    "API_TIMEOUT_MS": "600000"
+  }
+}
