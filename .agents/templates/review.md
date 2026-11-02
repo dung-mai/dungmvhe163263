@@ -19,3 +19,6 @@
 ## Kết luận
 - [ ] Sẵn sàng tạo PR
 - [ ] Quay lại build (liệt kê blocker)
+
+<!-- Dòng cuối cùng của file phải là VERDICT (xem skill verify) -->
+

@@ -20,6 +20,14 @@ description: Lane 0 router. Use when a new feature request arrives or work/<feat
 
 ## Output
 - Updated `brief.md`, `status.md` with "Lane tiếp theo".
+- The LAST lines of `brief.md` must be exactly these two machine-readable lines (the orchestrator reads them):
+
+```
+PROFILE: standard
+RISKS: auth_or_roles, data_model
+```
+
+`PROFILE` is one of `vibe | standard | full`. `RISKS` lists matched trigger names from `flow.yaml`, comma-separated, or `none`.
 
 ## Stop
 Show the profile, risk flags and lane list in 5 lines and stop. No gate here, but the user may change the profile.

@@ -12,7 +12,12 @@
       "Bash(git log:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git merge-base:*)"
+      "Bash(git merge-base:*)",
+      "Bash(node .agents/sensors/check-test-registry.mjs:*)",
+      "Bash(pnpm db:up:*)",
+      "Bash(pnpm db:migrate:*)",
+      "Bash(pnpm db:seed:*)",
+      "Bash(pnpm build:*)"
     ],
     "deny": [
       "Read(./.env)",
@@ -25,20 +30,30 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.agents/hooks/block-dangerous.sh\"" }
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.agents/hooks/block-dangerous.sh\""
+          }
         ]
       },
       {
         "matcher": "Edit|Write|MultiEdit",
         "hooks": [
-          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.agents/hooks/protect-files.sh\"" }
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.agents/hooks/protect-files.sh\""
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.agents/hooks/stop-verify.sh\"", "timeout": 240 }
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.agents/hooks/stop-verify.sh\"",
+            "timeout": 240
+          }
         ]
       }
     ]

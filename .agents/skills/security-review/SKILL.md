@@ -25,3 +25,6 @@ description: Lane 4 Security, turned on by risk triggers (auth, roles, money, PI
 ## Output
 - `work/<feature>/security.md`: table (item, result, evidence, fix), then blockers first.
 - Never edit source code in this lane. Run handoff.
+- The LAST line of `security.md` must be exactly one of:
+  - `VERDICT: pass` — no failing item of high impact
+  - `VERDICT: blockers` — at least one failing item that must be fixed before merge

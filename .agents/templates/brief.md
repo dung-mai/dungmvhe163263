@@ -17,3 +17,6 @@
 
 ## Câu hỏi mở
 1.
+
+<!-- Intake kết thúc file bằng 2 dòng PROFILE: và RISKS: (xem skill intake) -->
+

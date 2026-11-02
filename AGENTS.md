@@ -1,32 +1,34 @@
 # AGENTS.md — flashlab
 
-Storefront + flash sale. pnpm workspace: `apps/storefront` (Next.js App Router, Tailwind v4, shadcn/ui),
-`apps/api` (NestJS + Prisma + PostgreSQL), `packages/contracts` (public API types).
+Storefront + flash sale. pnpm workspace: `apps/storefront` (Next.js 16, App Router, Tailwind v4, shadcn/ui),
+`apps/api` (NestJS 12 + Prisma 7 + PostgreSQL), `packages/contracts` (public API types). Node 24.
 
 ## Commands
-- Install: `pnpm install --frozen-lockfile`
-- DB: `pnpm db:up && pnpm db:migrate && pnpm db:seed`
-- Dev: `pnpm dev` (storefront :3000, API 127.0.0.1:4000/api, Swagger /api/docs)
-- Gate before saying "done": `pnpm verify` (= lint + typecheck + test). Fast check: `pnpm lint && pnpm typecheck`
-- E2E: `pnpm test:e2e` (needs seeded dev DB)
+- DB: `pnpm db:up && pnpm db:migrate && pnpm db:seed` · Dev: `pnpm dev` (web :3000, API 127.0.0.1:4000/api)
+- Fast check: `pnpm lint && pnpm typecheck` · Full gate before "done": `pnpm verify`
+- API tests: `pnpm test` (migrates + seeds the test DB, builds, runs the files listed in `apps/api/scripts/test.mjs`)
+- One unit test file: `pnpm --filter @flashlab/api exec tsx --test test/<name>.test.ts` (no DB)
+- E2E: `pnpm test:e2e` (Playwright in `apps/storefront/e2e/`, needs seeded dev DB)
+- New migration: `pnpm --filter @flashlab/api exec prisma migrate dev --name <name>` (dev DB must be up)
 
 ## Hard rules
-1. Money is an integer VND string in contracts, Decimal in DB, BigInt when formatting. Never float.
-2. Domain/application code must not import Nest or Prisma. Nest modules are the composition root.
+1. Money is an integer VND string in contracts, Decimal(18,0) in DB, BigInt when formatting. Never float.
+2. Domain/application never import Nest or Prisma. Layout: `apps/api/src/modules/<name>/{domain,application,infrastructure,presentation}` + `<name>.module.ts` as composition root.
 3. Frontend never imports Prisma types; it uses `packages/contracts`.
-4. Promotions apply on `[startsAt, endsAt)` and never raise the base price.
-5. Never edit committed migrations; create a new one. Never run `prisma migrate reset` or touch `.env`.
-6. Authorization is enforced on the API, not only in the UI.
-7. Keep changes inside the files listed in the current `plan.md`; note any extra file in `status.md`.
+4. Promotions apply on `[startsAt, endsAt)`, lowest active price wins, never above base price.
+5. Never edit committed migrations, `.env`, or run `prisma migrate reset`. New settings go to `.env.example`.
+6. Authorization is enforced on the API, not only in the UI. Never log credentials, headers or request bodies.
+7. Every new API test file must be added to `apps/api/scripts/test.mjs` (a sensor in `pnpm verify` checks it).
+8. Before touching `apps/storefront`, read `apps/storefront/AGENTS.md`: this Next.js version differs from training data (check `node_modules/next/dist/docs/`; e.g. request interception may be `proxy.ts`, not `middleware.ts`).
+9. Stay inside the files listed in the current `plan.md`; note any extra file in `status.md`.
 
 ## How we work (AI delivery flow)
-- Every feature lives in `work/<feature>/` (brief, spec, design, plan, test-plan, review, status, evidence).
-- Lanes and gates: `.agents/flow.yaml`. Each lane has a skill in `.agents/skills/<lane>/SKILL.md`.
-- Rules: `.agents/rules/*.md` (read the ones a skill points to). Product context: `knowledge/`.
-- Start any session by reading `work/<feature>/status.md` if a feature is named.
-- Before stopping (done, blocked, or out of quota) run the `handoff` skill.
-- Stop at human gates (G1 scope, G2 design, G3 merge). Do not start the next lane yourself.
+- Each feature lives in `work/<feature>/` (brief, spec, design, plan, test-plan, review, status, evidence).
+- Lanes, profiles, risk triggers: `.agents/flow.yaml`. One skill per lane in `.agents/skills/<lane>/SKILL.md`.
+- Rules: `.agents/rules/*.md`. Product context: `knowledge/flashlab.md`, `docs/architecture.md`.
+- If a feature is named, start by reading `work/<feature>/status.md`. Before stopping, run the `handoff` skill.
+- Stop at human gates (G1 scope, G2 design, G3 merge). Never start the next lane yourself.
 
-## Writing style
-- Artifacts in `work/` in Vietnamese; code, identifiers, commits and code comments in English.
-- Commits: `feat(<feature>): T<n> <what>` / `fix(<feature>): ...`. One task per commit.
+## Style
+- Artifacts in `work/` in Vietnamese; code, identifiers, commits and comments in English.
+- Commits: `feat(<feature>): T<n> <what>`, one task per commit, stage only the task's files.

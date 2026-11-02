@@ -11,7 +11,7 @@ description: Lane 3 Developer. Use after G2 to implement plan.md task by task wi
 
 ## Loop for each unchecked task Tn
 1. Read the task. If it is unclear or wrong, stop and write the question in `status.md` instead of guessing.
-2. Write the test first. Run the narrowest command and confirm it fails for the right reason.
+2. Write the test first. If it is a new file under `apps/api/test/`, register it in `apps/api/scripts/test.mjs` in the same task. Run the narrowest command and confirm it fails for the right reason.
 3. Implement the smallest change that passes. Stay inside the task's files; if you must touch another file, note it in `status.md`.
 4. Run the task's check command, then `pnpm lint && pnpm typecheck`.
 5. Stage only the files of this task (`git add <files>`, never `git add -A`; QA may be writing tests in parallel). Commit: `feat(<feature>): Tn <what>`. Tick the task in `plan.md`.

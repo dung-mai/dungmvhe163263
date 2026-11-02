@@ -31,4 +31,5 @@ run() {
 
 run "pnpm lint" pnpm -s lint
 run "pnpm typecheck" pnpm -s typecheck
+run "test registry" node .agents/sensors/check-test-registry.mjs
 exit 0
