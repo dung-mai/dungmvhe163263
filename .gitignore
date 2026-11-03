@@ -10,3 +10,6 @@ dist/
 
 playwright-report/
 test-results/
+work/*/logs/
+work/*/.run-state.json
+.agents/providers/*.local.json

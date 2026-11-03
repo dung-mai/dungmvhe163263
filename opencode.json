@@ -14,7 +14,9 @@
       "git diff*": "allow",
       "git log*": "allow",
       "git merge-base*": "allow",
-      "ls*": "allow"
+      "ls*": "allow",
+      "node .agents/sensors/*": "allow",
+      "pnpm verify*": "allow"
     }
   }
 }

@@ -2,7 +2,13 @@
 
 Bộ khung AI delivery flow, độc lập với tool: cùng một bộ rules + skills cho Claude Code, Codex và OpenCode (DeepSeek).
 
-**Cách dùng:** copy mọi thứ trong thư mục này (kể cả `.agents/`, `.claude/`) vào root repo flashlab, chạy `bash scripts/ai/install.sh`, rồi mở `.agents/RUNBOOK.md`.
+**Cách dùng:** copy mọi thứ trong thư mục này (kể cả `.agents/`, `.claude/`) vào root repo flashlab, chạy `bash scripts/ai/install.sh`, rồi:
+
+```bash
+pnpm ai product-sort "<đề bài>"     # một lệnh chạy cả flow, chỉ dừng ở gate để bạn duyệt
+```
+
+Chi tiết trong `.agents/RUNBOOK.md`.
 
 ```
 AGENTS.md                         rules chung, mọi tool đều đọc (< 60 dòng)
@@ -24,9 +30,10 @@ opencode.json                     OpenCode: model DeepSeek mặc định + quy�
   agents/                         reviewer (sonnet), security-reviewer (sonnet), explorer (haiku)
   skills -> ../.agents/skills     (install.sh tạo link)
 scripts/ai/
+  run.mjs                         orchestrator: pnpm ai <feature> "<đề bài>"
   install.sh                      cài một lần
-  new-feature.sh                  tạo work/<feature>/ + branch
-  step.sh                         chạy một lane trên engine đã định tuyến
+  new-feature.sh                  tạo work/<feature>/ + branch (run.mjs tự gọi)
+  step.sh                         bản bash đơn giản: chạy một lane
 knowledge/flashlab.md             context sản phẩm
 work/                             mỗi feature một thư mục artifact
 ```

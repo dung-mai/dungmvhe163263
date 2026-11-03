@@ -3,7 +3,7 @@
 
 profiles:
   vibe:       # small internal tools, prototypes
-    lanes: [intake, define+design, build, verify, retro]   # define and design merged into one short plan
+    lanes: [intake, design, build, verify, retro]          # no define: design.md starts with a short AC list
     gates: [G2]                                            # one approval: the plan
   standard:   # normal feature in a real product (default for flashlab)
     lanes: [intake, define, design, test-plan, build, verify, pr, retro]
@@ -13,22 +13,26 @@ profiles:
     gates: [G1, G2, G3]
 
 default_profile: standard
+# security runs after verify for every profile when a risk trigger matches (risk beats profile).
+# The orchestrator (pnpm ai) implements exactly this file; keep them in sync.
 
 # If the change touches any of these, switch the listed steps ON regardless of profile.
 risk_triggers:
   auth_or_roles:
-    paths: ["apps/api/src/**/auth/**", "apps/api/src/**/user*/**", "apps/storefront/**/admin/**", "**/middleware.ts"]
+    paths: ["apps/api/src/modules/auth/**", "apps/api/src/modules/user*/**", "apps/storefront/app/admin/**",
+            "apps/storefront/app/login/**", "apps/storefront/proxy.ts", "apps/storefront/middleware.ts"]
     keywords: [login, password, role, admin, session, jwt, token, permission]
     turn_on: [security, e2e]
   money:
-    paths: ["**/pricing/**", "**/promotion*/**", "**/checkout/**", "**/cart/**", "packages/contracts/**/money*"]
+    paths: ["apps/api/src/modules/promotions/**", "apps/api/src/modules/*/domain/*price*", "**/checkout/**",
+            "apps/storefront/features/cart/**", "apps/storefront/lib/formatters.ts"]
     keywords: [price, discount, checkout, payment, VND]
     turn_on: [security, e2e, design]
   data_model:
-    paths: ["apps/api/prisma/schema.prisma"]
+    paths: ["apps/api/prisma/schema.prisma", "apps/api/prisma/seed.ts"]
     turn_on: [design]
   public_contract:
-    paths: ["packages/contracts/**"]
+    paths: ["packages/contracts/src/**"]
     turn_on: [design]
 
 lanes:

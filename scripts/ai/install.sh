@@ -11,6 +11,10 @@ echo "== flashlab AI kit install =="
 
 # 1. Claude Code reads skills from .claude/skills -> point it at the shared .agents/skills
 mkdir -p .claude
+if [ -f .claude/skills ] && [ ! -L .claude/skills ]; then
+  # Git on Windows without symlink support checks the link out as a small text file: replace it
+  rm -f .claude/skills
+fi
 if [ -L .claude/skills ] || [ -d .claude/skills ]; then
   echo "• .claude/skills already exists, leaving it."
 else
@@ -24,25 +28,25 @@ else
 fi
 
 # 2. Executable scripts and hooks
-chmod +x scripts/ai/*.sh .agents/hooks/*.sh
+chmod +x scripts/ai/*.sh .agents/hooks/*.sh .agents/sensors/*.mjs scripts/ai/run.mjs
 
 # 3. pnpm verify script
 node -e '
   const fs = require("fs");
   const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
   pkg.scripts = pkg.scripts || {};
-  if (!pkg.scripts.verify) {
-    pkg.scripts.verify = "pnpm lint && pnpm typecheck && pnpm test";
-    fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-    console.log("• added \"verify\" script to package.json");
-  } else {
-    console.log("• package.json already has a verify script");
+  const want = { verify: "pnpm lint && pnpm typecheck && node .agents/sensors/check-test-registry.mjs && pnpm test", ai: "node scripts/ai/run.mjs" };
+  let changed = false;
+  for (const [k, v] of Object.entries(want)) {
+    if (!pkg.scripts[k]) { pkg.scripts[k] = v; changed = true; console.log(`• added "${k}" script to package.json`); }
+    else console.log(`• package.json already has "${k}"`);
   }
+  if (changed) fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
 '
 
 # 4. .gitignore entries
 touch .gitignore
-for line in "work/*/logs/" ".agents/providers/*.local.json"; do
+for line in "work/*/logs/" "work/*/.run-state.json" ".agents/providers/*.local.json"; do
   grep -qxF "$line" .gitignore || { echo "$line" >> .gitignore; echo "• .gitignore += $line"; }
 done
 
