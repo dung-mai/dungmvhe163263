@@ -12,4 +12,5 @@ playwright-report/
 test-results/
 work/*/logs/
 work/*/.run-state.json
+work/*/.qa-freeze/
 .agents/providers/*.local.json
