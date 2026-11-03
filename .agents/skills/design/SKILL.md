@@ -17,7 +17,9 @@ description: Lane 2 TL/SA. Use after G1 to check Definition of Ready, design the
 4. Security & risk section: copy each relevant rule from `.agents/rules/security.md` and say how the design satisfies it.
 5. List 2 alternatives you rejected and why (one line each).
 6. If a decision is hard to reverse (auth mechanism, schema shape), write `docs/adr/NNNN-<slug>.md` (context, decision, consequences).
-7. plan.md: tasks T1..Tn, each ≤ 30 minutes, each with files, the test to write first, a check command and the AC it serves. Mark test files owned by QA.
+7. plan.md: tasks T1..Tn, each ≤ 30 minutes, each with files, the test to write first, a check command, the AC it serves and `Mode: ai` or `Mode: human`. Mark test files owned by QA, one per line in backticks under "Tests do QA sở hữu".
+   Use `Mode: human` for anything an agent must not do alone: migrations on a real database, secrets or keys, shared environments, and judgement calls (look and feel, copy). Everything that has a test and touches only the repo is `Mode: ai`.
+   In spec.md every AC has a verification label `[auto]`, `[semi]` or `[manual]`; if you add or split an AC in design, keep that label and the `AC-n` numbering.
 8. Order tasks so the app builds after every task.
 
 ## Output

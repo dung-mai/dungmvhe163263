@@ -20,6 +20,8 @@ Independence is the point: tests come from what was asked, not from what was bui
 2. If auth/money is flagged, add security cases: wrong password, missing cookie, expired token, USER calling an ADMIN endpoint, trying to set own role, IDOR.
 3. Write "Bằng chứng cần thu": which screenshots or videos verify needs, at which viewport.
 4. If plan.md lists QA-owned test files, write them now. They may fail until build is done; mark with a comment `// QA-owned: from AC-n`. Register new API test files in `apps/api/scripts/test.mjs`.
+5. Put the AC id in every test name (`test('AC-2 …')`): a script maps each AC in `spec.md` to the tests that mention it. List every file you wrote, one per line in backticks, under "Tests do QA sở hữu" in `plan.md`; the orchestrator freezes exactly those files once build is done.
+6. AC labelled `[manual]` or `[semi]` in the spec need no automated test; describe how to check them in "Bằng chứng cần thu".
 
 ## Output
 - `work/<feature>/test-plan.md`, QA-owned test files (if listed)

@@ -18,11 +18,17 @@ description: Lane 3 Developer. Use after G2 to implement plan.md task by task wi
    If `git add`/`git commit` is not allowed (e.g. Codex sandbox, `.git/index.lock: Permission denied`), do not retry or work around it: tick the task and go on. The orchestrator commits your changes after the lane.
 6. Update `status.md` (handoff skill) every 2–3 tasks, so another engine can continue if you stop.
 
+## Tasks marked `Mode: human`
+Some tasks in `plan.md` carry `Mode: human` (real database, secrets, shared environments, judgement calls). Skip them: do not do them, do not tick them. List each under "Đang chờ người" in `status.md` with the exact command or decision the human needs to make. The orchestrator asks the human before verify.
+
+## Test naming
+Every automated test for an acceptance criterion carries its id in the name, e.g. `test('AC-3 sorts by price ascending', …)`. A script checks that each AC in `spec.md` appears in some test; an AC without a test sends the work back to you.
+
 ## Environment blockers
 If something outside the code blocks you (DB down, port busy, no network, permission denied), stop trying after one attempt, write it under "Đang chờ người" in `status.md` with the command the human should run, and finish the tasks you can.
 
 ## Never
-- Edit QA-owned test files to make them pass; if one looks wrong, write it in `status.md`.
+- Edit QA-owned test files (listed in plan.md under "Tests do QA sở hữu") to make them pass; if one looks wrong, write it in `status.md`. The orchestrator freezes them: fewer assertions, `skip`/`only` or a deleted file stops the run. New tests of your own are fine.
 - Edit committed migrations, `.env`, or the spec.
 - Weaken a test or add `skip`/`only`.
 
