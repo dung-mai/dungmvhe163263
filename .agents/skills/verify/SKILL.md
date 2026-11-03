@@ -19,12 +19,19 @@ description: Lane 4 QA + Reviewer. Use after build to run the gates, check every
 6. Evidence: for UI changes, take screenshots with Playwright (desktop + mobile) into `work/<feature>/evidence/` named `AC-n-<viewport>.png`.
 7. If Claude Code: delegate the read-only part to the `reviewer` subagent to keep your context clean.
 
+## Environment problems are not code findings
+Permission errors (`.git/index.lock`, sandbox), busy ports, DB not running, no network, a missing tool: the build agent cannot fix these.
+List them under `## Cần người xử lý` in review.md with the exact command the human should run, and end with `VERDICT: blocked-env`.
+Never send environment problems back to build. Code that is correct but uncommitted is not a finding: the orchestrator commits build changes.
+
 ## Do not
 - Fix code in this lane. Findings go to review.md; blockers send the feature back to build.
+- Re-review unchanged code from scratch in a fix round: check the previous findings first, then only the new diff.
 
 ## Output
 - `work/<feature>/review.md`, `work/<feature>/evidence/*`
 - Conclusion: ready for PR, or back to build with the blocker list. Run handoff.
 - The LAST line of `review.md` must be exactly one of these (the orchestrator reads it):
   - `VERDICT: ready` — no blocker and no major finding left
-  - `VERDICT: back-to-build` — at least one blocker or major finding, or `pnpm verify` fails
+  - `VERDICT: back-to-build` — at least one blocker or major finding in the code, or `pnpm verify` fails because of the code
+  - `VERDICT: blocked-env` — cannot verify because of the environment (see above); nothing for build to fix

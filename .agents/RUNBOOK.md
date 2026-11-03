@@ -141,8 +141,32 @@ gh pr create --body-file work/rbac-login/pr.md
 | Đổi model cho một lane | `MODEL_DESIGN=opus`, `MODEL_TEST_PLAN=deepseek/deepseek-v4-pro` |
 | Đổi thứ tự dự phòng | `FALLBACK_BUILD="claude deepseek-cc"` |
 | Cho sửa nhiều vòng hơn | `MAX_FIX_ROUNDS=3` |
-| Engine hết quota bị bỏ qua bao lâu | `LIMIT_COOLDOWN_MIN=60` |
+| Engine hết quota hoặc lỗi truy cập bị bỏ qua bao lâu | `LIMIT_COOLDOWN_MIN=60` |
+| Tắt hẳn một engine trên máy này (vd. DeepSeek bị chặn ở công ty) | `DISABLED_ENGINES="deepseek"` |
+| Model cho lane Claude không ghi model và cho mọi lần dự phòng | `DEFAULT_MODEL_CLAUDE=sonnet` |
+| Giới hạn thời gian mỗi lane | `LANE_TIMEOUT_MIN=25` (0 = không giới hạn) |
 | Không tự commit artifact | `AUTO_COMMIT_ARTIFACTS=0` |
+| Không để orchestrator commit code của build | `AUTO_COMMIT_BUILD=0` |
+| Rủi ro nào bật lane security | `SECURITY_RISKS="auth_or_roles money"` |
+| Server cũ chiếm cổng trước verify | `BUSY_PORTS=ask` (hỏi), `kill` (tự dừng), `ignore` |
+
+### Orchestrator tự giữ cho flow không đốt quota
+- **Security chỉ chạy khi verify trả `ready`.** Code còn phải quay lại build thì chưa review bảo mật.
+- **Lỗi môi trường không quay lại build.** Verify ghi `VERDICT: blocked-env` và mục "Cần người xử lý" (quyền, cổng, DB, mạng). Orchestrator dừng, in việc cần làm. Xử lý xong chạy `pnpm ai <f> --from verify`.
+- **Vòng sửa không đổi code thì dừng ngay**, không lặp tiếp.
+- **Orchestrator commit code của build**, chỉ các file build vừa đổi (file đã dở dang từ trước thì bỏ qua, trừ khi plan.md nêu tên). Codex không ghi được `.git` trong sandbox nên không cần nới quyền.
+- **Engine lỗi 401/403/mạng** được bỏ qua như khi hết quota, không thử lại ở mỗi vòng.
+- **Mỗi lane có giới hạn thời gian.** Quá giờ thì dừng và hỏi bạn, không chuyển sang engine khác.
+- **Trước verify kiểm tra cổng 3000/4000.** Playwright dùng lại server đang chạy, nên server cũ cho kết quả e2e sai.
+
+### Xem thời gian và token
+Sau mỗi lane có một dòng như `✔ verify (claude, 6m12s, 1.2M tok, ~$0.95, 31 lượt)`. Cuối lần chạy có bảng trong `work/<f>/run-summary.md` và dòng tổng.
+- Token = input (kể cả cache) + output. Phần lớn là cache đọc lại, rẻ hơn nhiều so với token mới.
+- `~$` là giá API tương đương do Claude Code báo. Gói Pro không tính tiền theo số này, nhưng dùng nó để so lane nào tốn quota nhất.
+- Codex chỉ báo tổng token. OpenCode/DeepSeek chưa có số.
+
+### Dừng giữa chừng
+Ctrl+C một lần: dừng engine đang chạy cùng mọi tiến trình con (kể cả dev server), lưu trạng thái, ghi `run-summary.md`. Ctrl+C lần nữa: thoát ngay. Chạy tiếp bằng `pnpm ai <f>`.
 
 Profile và cờ rủi ro nằm trong `.agents/flow.yaml`. Ví dụ, muốn mọi thay đổi trong `apps/api/src/orders/**` đều bật security thì thêm path đó vào `risk_triggers`.
 
@@ -210,3 +234,7 @@ Lần đầu chạy, hãy để ý:
 | Claude Code không thấy skills | `.claude/skills` phải là link tới `.agents/skills`; trên Windows chạy lại `install.sh` sau khi sửa skill |
 | Chạy trên Windows | Dùng Git Bash hoặc WSL cho `install.sh`; `pnpm ai` tự chuyển prompt sang file để tránh lỗi shell |
 | Muốn làm lại một lane | `pnpm ai <f> --from <lane>` |
+| `Verify bị chặn bởi môi trường` | Làm theo mục "Cần người xử lý" in ra (thường là dừng server cũ, bật DB), rồi `pnpm ai <f> --from verify` |
+| `Vòng sửa ... không thay đổi code nào` | Build không sửa được vấn đề. Đọc `review.md`/`security.md` và `status.md` §Đang chờ người, tự quyết rồi `--from verify` hoặc `--from build` |
+| `quá 25 phút nên đã dừng` | Plan quá lớn cho một lane. Chia nhỏ task trong plan.md hoặc tăng `LANE_TIMEOUT_MIN` |
+| Task nhỏ bị xếp `full` | Sửa dòng `PROFILE:` cuối `brief.md`, hoặc chạy với `--profile standard` |

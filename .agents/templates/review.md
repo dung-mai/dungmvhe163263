@@ -16,6 +16,9 @@
 ## Clean code
 - Trùng lặp, tên, độ dài hàm, ranh giới lớp
 
+## Cần người xử lý
+<!-- Chỉ vấn đề môi trường: quyền, cổng, DB, mạng, thiếu tool. Ghi lệnh cụ thể. Có mục ở đây => VERDICT: blocked-env -->
+
 ## Kết luận
 - [ ] Sẵn sàng tạo PR
 - [ ] Quay lại build (liệt kê blocker)
