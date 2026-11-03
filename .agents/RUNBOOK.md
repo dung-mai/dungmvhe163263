@@ -149,6 +149,11 @@ gh pr create --body-file work/rbac-login/pr.md
 | Không để orchestrator commit code của build | `AUTO_COMMIT_BUILD=0` |
 | Rủi ro nào bật lane security | `SECURITY_RISKS="auth_or_roles money"` |
 | Server cũ chiếm cổng trước verify | `BUSY_PORTS=ask` (hỏi), `kill` (tự dừng), `ignore` |
+| Trần cho một lần chạy | `RUN_MAX_MIN=120`, `RUN_MAX_TOKENS_M=5`, `RUN_MAX_COST_USD=0` (0 = không giới hạn) |
+| Lane chỉ-đọc mà sửa code thì | `READONLY_GUARD=stop` (dừng) \| `warn` \| `off` |
+| Build làm yếu test của QA thì | `QA_FREEZE=stop` \| `warn` \| `off` |
+| AC không có test | `AC_TRACE=warn` (báo cho verify), `gate` (quay lại build ngay, khỏi tốn verify), `off` |
+| Thông báo khi tới cổng hoặc dừng | `NOTIFY="bell desktop ntfy"`, `NTFY_TOPIC=<tên khó đoán>` |
 
 ### Orchestrator tự giữ cho flow không đốt quota
 - **Security chỉ chạy khi verify trả `ready`.** Code còn phải quay lại build thì chưa review bảo mật.
@@ -158,6 +163,19 @@ gh pr create --body-file work/rbac-login/pr.md
 - **Engine lỗi 401/403/mạng** được bỏ qua như khi hết quota, không thử lại ở mỗi vòng.
 - **Mỗi lane có giới hạn thời gian.** Quá giờ thì dừng và hỏi bạn, không chuyển sang engine khác.
 - **Trước verify kiểm tra cổng 3000/4000.** Playwright dùng lại server đang chạy, nên server cũ cho kết quả e2e sai.
+- **Chỉ build và test-plan được sửa code.** Intake, define, design, verify, security và pr bị so sánh code trước/sau; sửa file đang theo dõi trong `apps/` hay `packages/` thì dừng (file mới như ảnh, báo cáo chỉ cảnh báo).
+- **Test của QA bị đóng băng.** Khi test-plan và build xong, orchestrator chép các file liệt kê dưới "Tests do QA sở hữu" trong plan.md vào `work/<f>/.qa-freeze/`. Vòng sửa mà bớt assertion, thêm `skip/only/todo` hoặc xóa file thì dừng. Sửa mà không bớt assertion chỉ báo cho verify. Chấp nhận thay đổi: `pnpm ai <f> --refreeze --from verify`.
+- **Mỗi AC phải có test nhắc mã của nó.** Script `check-ac-trace` đối chiếu `AC-n` trong spec.md với tên test, ghi `work/<f>/ac-trace.md`. AC gắn `[manual]` hoặc `[semi]` không bắt buộc.
+- **Task có `Mode: human` không giao cho agent.** Trước verify orchestrator liệt kê các task này và hỏi: đã làm xong, chưa làm, hay dừng.
+- **Verdict `back-to-design`.** Khi spec mơ hồ, mâu thuẫn hoặc design không thỏa được AC, verify không trả về build. Flow dừng và chỉ bạn `--from define` hoặc `--from design`; cổng liên quan phải duyệt lại.
+- **Trần ngân sách.** Vượt `RUN_MAX_*` thì dừng trước lane kế tiếp. Chạy lại `pnpm ai <f>` là bắt đầu đếm lại, tức là bạn quyết định có tiếp tục không.
+- **Test-plan tránh engine đang build** (`QA_INDEPENDENT=1`), giống reviewer.
+- **Tên model sai engine bị bỏ qua có cảnh báo.** Ví dụ `ENGINE_SECURITY=claude` mà `MODEL_SECURITY=deepseek/...`: dùng model mặc định của Claude thay vì gọi lỗi.
+
+### Trang duyệt cổng và thông báo
+Tới mỗi cổng, orchestrator ghi `work/<f>/gate-<G>.md`: profile, rủi ro, đã tốn bao nhiêu, checklist việc của bạn, danh sách AC, task kèm `ai/human`, câu hỏi mở; riêng G3 thêm verdict, AC có test, test QA có bị sửa không, ảnh bằng chứng và `git diff --stat`. Đọc file này trước, mở spec/design/plan khi cần chi tiết.
+
+Khi cần bạn (cổng, việc `Mode: human`, cổng bị chiếm, flow dừng, xong) orchestrator rung chuông terminal và gửi toast của hệ điều hành. Muốn nhận trên điện thoại: cài app ntfy, đặt `NOTIFY="bell desktop ntfy"` và `NTFY_TOPIC` là một chuỗi khó đoán (ai biết tên topic đều đọc được tin; tin chỉ chứa tên feature và trạng thái).
 
 ### Xem thời gian và token
 Sau mỗi lane có một dòng như `✔ verify (claude, 6m12s, 1.2M tok, ~$0.95, 31 lượt)`. Cuối lần chạy có bảng trong `work/<f>/run-summary.md` và dòng tổng.
@@ -167,6 +185,19 @@ Sau mỗi lane có một dòng như `✔ verify (claude, 6m12s, 1.2M tok, ~$0.95
 
 ### Dừng giữa chừng
 Ctrl+C một lần: dừng engine đang chạy cùng mọi tiến trình con (kể cả dev server), lưu trạng thái, ghi `run-summary.md`. Ctrl+C lần nữa: thoát ngay. Chạy tiếp bằng `pnpm ai <f>`.
+
+### Khi một engine lỗi, orchestrator làm gì
+| Loại lỗi | Nhận ra bằng | Hành động |
+| --- | --- | --- |
+| Quá giờ lane | vượt `LANE_TIMEOUT_MIN` | Dừng và hỏi bạn, không chuyển engine |
+| Hết quota / rate limit | chữ limit, 429 trong kết quả ngắn | Cooldown engine, chuyển engine kế |
+| Không truy cập được | 401, 403, mạng, chưa đăng nhập, chưa cài | Cooldown engine, chuyển engine kế |
+| Lỗi tức thì lặp lại | thoát trong < 30s không có kết quả, hai lần liên tiếp | Coi như không dùng được: cooldown, chuyển engine kế |
+| Tên model sai | "unknown model", "model not found" | Chuyển engine kế, không cooldown; sửa `MODEL_*` |
+| Lỗi khác | exit khác 0 | Chuyển engine kế, không cooldown |
+| Lỗi môi trường của verify | `VERDICT: blocked-env` | Dừng, in "Cần người xử lý" |
+| Spec/design sai | `VERDICT: back-to-design` | Dừng, bạn quyết định |
+| Vòng sửa không đổi code | so sánh HEAD và diff | Dừng |
 
 Profile và cờ rủi ro nằm trong `.agents/flow.yaml`. Ví dụ, muốn mọi thay đổi trong `apps/api/src/orders/**` đều bật security thì thêm path đó vào `risk_triggers`.
 
@@ -180,6 +211,7 @@ Profile và cờ rủi ro nằm trong `.agents/flow.yaml`. Ví dụ, muốn mọ
 | `pnpm ai <f> "..." --profile vibe` | ép profile thay vì để intake chọn |
 | `pnpm ai <f> --from build` | chạy lại từ lane build trở đi |
 | `pnpm ai <f> --only verify` | chỉ chạy một lane |
+| `pnpm ai <f> --refreeze --from verify` | chấp nhận test QA hiện tại làm bản gốc mới |
 | `pnpm ai <f> --quiet` | ẩn output của agent, chỉ hiện tiến trình |
 
 Ba profile:

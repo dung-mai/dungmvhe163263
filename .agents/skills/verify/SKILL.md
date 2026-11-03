@@ -24,6 +24,17 @@ Permission errors (`.git/index.lock`, sandbox), busy ports, DB not running, no n
 List them under `## Cần người xử lý` in review.md with the exact command the human should run, and end with `VERDICT: blocked-env`.
 Never send environment problems back to build. Code that is correct but uncommitted is not a finding: the orchestrator commits build changes.
 
+## Spec or design is the problem, not the code
+If an AC is ambiguous, contradicts another, cannot be met by the design, or cannot be tested at all, build cannot fix it: another build round only burns quota.
+Describe it under `## Cần sửa spec hoặc design` (which AC or paragraph, why, what you propose) and end with `VERDICT: back-to-design`.
+
+## Sensors already ran
+The orchestrator runs deterministic checks before this lane and puts the results in your prompt: AC with no test (`work/<feature>/ac-trace.md`), QA-owned tests that build changed (originals in `work/<feature>/.qa-freeze/`), tasks marked `Mode: human` that are not done.
+Do not redo them by hand. A removed assertion, a new `skip`/`only` or a weaker expectation in a QA-owned test is a blocker. Tasks marked `Mode: human` go under `## Cần người xử lý`; they are not code defects.
+
+## You are read-only
+Write only inside `work/<feature>/` (review.md, evidence/). The orchestrator compares the code before and after this lane and stops the run if it changed.
+
 ## Do not
 - Fix code in this lane. Findings go to review.md; blockers send the feature back to build.
 - Re-review unchanged code from scratch in a fix round: check the previous findings first, then only the new diff.
@@ -35,3 +46,4 @@ Never send environment problems back to build. Code that is correct but uncommit
   - `VERDICT: ready` — no blocker and no major finding left
   - `VERDICT: back-to-build` — at least one blocker or major finding in the code, or `pnpm verify` fails because of the code
   - `VERDICT: blocked-env` — cannot verify because of the environment (see above); nothing for build to fix
+  - `VERDICT: back-to-design` — the spec or design is wrong or untestable (see above); needs a human decision and a re-approved gate

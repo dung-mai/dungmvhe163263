@@ -19,6 +19,9 @@
 ## Cần người xử lý
 <!-- Chỉ vấn đề môi trường: quyền, cổng, DB, mạng, thiếu tool. Ghi lệnh cụ thể. Có mục ở đây => VERDICT: blocked-env -->
 
+## Cần sửa spec hoặc design
+<!-- Chỉ khi spec mơ hồ, mâu thuẫn, hoặc design không thể thỏa AC (build không sửa được). Nêu AC/đoạn nào sai và đề xuất. Có mục ở đây => VERDICT: back-to-design -->
+
 ## Kết luận
 - [ ] Sẵn sàng tạo PR
 - [ ] Quay lại build (liệt kê blocker)
