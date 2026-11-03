@@ -13,9 +13,12 @@
 //   --quiet          hide agent output, show only progress lines
 //
 // Routing, fallbacks and limits live in .agents/models.env. No dependencies, Node >= 20.
+// Ctrl+C once: stop running engines, save state, write run-summary.md. Twice: exit at once.
 
 import { spawn, spawnSync, execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import readline from 'node:readline';
 
@@ -68,12 +71,35 @@ const PROFILES = {
   standard: { lanes: ['intake', 'define', 'design', 'test-plan', 'build', 'verify', 'security', 'pr'], gates: { design: 'G1+G2', pr: 'G3' } },
   full:     { lanes: ['intake', 'define', 'design', 'test-plan', 'build', 'verify', 'security', 'pr'], gates: { define: 'G1', design: 'G2', pr: 'G3' } },
 };
-const needSecurity = (state, profile) => profile.name === 'full' || (state.risks || []).length > 0;
+// Only risks whose flow.yaml turn_on includes security pull in the security lane.
+const SECURITY_RISKS = splitList(cfg.SECURITY_RISKS ?? 'auth_or_roles money');
+const needSecurity = (state, profile) => profile.name === 'full' || (state.risks || []).some((r) => SECURITY_RISKS.includes(r));
 
 const MAX_FIX_ROUNDS = Number(cfg.MAX_FIX_ROUNDS || 2);
 const COOLDOWN_MS = Number(cfg.LIMIT_COOLDOWN_MIN || 60) * 60_000;
+const LANE_TIMEOUT_MS = Number(cfg.LANE_TIMEOUT_MIN ?? 25) * 60_000; // 0 = no limit
 const AUTO_COMMIT = (cfg.AUTO_COMMIT_ARTIFACTS ?? '1') !== '0';
+const AUTO_COMMIT_BUILD = (cfg.AUTO_COMMIT_BUILD ?? '1') !== '0';
+const METRICS = (cfg.METRICS ?? '1') !== '0';
+const DISABLED = new Set(splitList(cfg.DISABLED_ENGINES));
+const VERIFY_PORTS = splitList(cfg.VERIFY_PORTS ?? '3000 4000').map(Number).filter(Boolean);
+const BUSY_PORTS = (cfg.BUSY_PORTS || 'ask').toLowerCase(); // ask | kill | ignore
 const LIMIT_RE = /(usage limit|rate.?limit|quota (exceeded|reached)|exceeded your|insufficient (balance|credit)|credit balance is too low|too many requests|\b429\b|limit reached|try again (in|after|later))/i;
+// Engine cannot be used at all right now (blocked network, bad key, not logged in, not installed).
+const UNAVAILABLE_RE = /(\b40[13]\b|forbidden|unauthori[sz]ed|invalid (api )?key|authentication (failed|error)|not logged in|please (log ?in|run \S+ login)|ENOTFOUND|ECONNREFUSED|getaddrinfo|command not found|is not recognized as|spawn \S+ ENOENT)/i;
+
+// ---------- Ctrl+C: kill running engines (whole process tree), save, summarize ----------
+const children = new Set();
+let currentState = null;
+let interrupted = false;
+process.on('SIGINT', () => {
+  if (interrupted) { for (const ch of children) killTree(ch, true); process.exit(130); }
+  interrupted = true;
+  process.stdout.write(yellow('\n⏹ Ctrl+C: đang dừng engine và lưu trạng thái… (bấm Ctrl+C lần nữa để thoát ngay)\n'));
+  for (const ch of children) killTree(ch);
+  if (!currentState || flags.dryRun) process.exit(130);
+  try { finish(currentState, 'interrupted'); } catch { process.exit(130); }
+});
 
 // ---------- input from the human (works for TTY and piped stdin) ----------
 let lineIter = null;
@@ -95,6 +121,7 @@ await main();
 async function main() {
   ensureFeature();
   const state = loadState();
+  currentState = state;
 
   if (flags.from) {
     if (!LANES[flags.from]) die(`Unknown lane for --from: ${flags.from}`);
@@ -143,13 +170,17 @@ async function main() {
     if (lane === 'test-plan' && lanes[i + 1] === 'build') {
       const jobs = ['test-plan', 'build'].filter((l) => !state.done.includes(l));
       log(bold(`\n⇉ Song song: ${jobs.join(' ‖ ')}`));
-      const results = await Promise.all(jobs.map((l) => runLane(state, l, { parallel: true })));
+      const pending = {};
+      const results = await Promise.all(jobs.map((l) => runLane(state, l, { parallel: true, pending })));
+      // commit build only after test-plan stopped writing, so half-written QA files are not swept in
+      if (pending.build) commitBuild(pending.build.engine, pending.build.dirtyBefore);
       if (results.includes(false)) return finish(state, 'stopped');
       i++; // build handled
       continue;
     }
 
-    if (!(await runLane(state, lane))) return finish(state, 'stopped');
+    const ok = lane === 'verify' ? await runVerify(state) : await runLane(state, lane);
+    if (!ok) return finish(state, 'stopped');
 
     const gate = profile.gates[lane];
     if (gate && !state.gates[gate]) {
@@ -170,6 +201,12 @@ async function runLane(state, lane, opts = {}) {
   const primary = cfg[`ENGINE_${key}`] || 'claude';
   let chain = unique([primary, ...splitList(cfg[`FALLBACK_${key}`] ?? cfg.FALLBACK_DEFAULT ?? 'claude codex deepseek')]);
 
+  // engines switched off in models.env (e.g. DeepSeek blocked on the office network)
+  if (DISABLED.size) {
+    chain = chain.filter((e) => !DISABLED.has(e));
+    if (!chain.length) { err(`${lane}: mọi engine của lane này đều nằm trong DISABLED_ENGINES.`); return false; }
+  }
+
   // independence rule: reviewers must not be the engine that built
   if ((lane === 'verify' || lane === 'security') && state.builtBy) {
     const filtered = chain.filter((e) => e !== state.builtBy);
@@ -177,44 +214,67 @@ async function runLane(state, lane, opts = {}) {
     else warn(`${lane}: mọi engine đều là ${state.builtBy}, review sẽ không độc lập.`);
   }
 
-  // engines that hit a quota recently are skipped for LIMIT_COOLDOWN_MIN minutes (unless nothing else is left)
+  // engines that hit a quota or were unreachable recently are skipped for LIMIT_COOLDOWN_MIN minutes (unless nothing else is left)
   const cooling = (e) => state.cooldown?.[e] && Date.now() - Date.parse(state.cooldown[e]) < COOLDOWN_MS;
   const fresh = chain.filter((e) => !cooling(e));
   if (fresh.length && fresh.length < chain.length) {
-    log(dim(`  (bỏ qua tạm ${chain.filter(cooling).join(', ')}: vừa hết quota)`));
+    log(dim(`  (bỏ qua tạm ${chain.filter(cooling).join(', ')}: vừa hết quota hoặc không truy cập được)`));
     chain = fresh;
   }
 
   let previous = null;
   for (const engine of chain) {
-    const model = engine === primary ? cfg[`MODEL_${key}`] || '' : engine === 'deepseek' ? cfg.DEEPSEEK_MODEL || '' : '';
+    const model = modelFor(lane, engine);
     const prompt = buildPrompt(state, lane, { previous, extra: opts.extra });
     const t0 = Date.now();
     const label = `${lane}·${engine}${model ? `(${model.split('/').pop()})` : ''}`;
     log(`\n${bold('▶')} ${bold(lane)} ${dim('→')} ${(engineColor[engine] || ((s) => s))(engine)}${model ? dim(' ' + model) : ''}`);
 
-    const { code, tail, logFile } = await spawnEngine(engine, model, prompt, lane, { prefix: opts.parallel ? label : null });
+    const dirtyBefore = lane === 'build' ? gitChanged() : [];
+    const { code, tail, logFile, metrics, timedOut } = await spawnEngine(engine, model, prompt, lane, { prefix: opts.parallel ? label : null });
+    if (interrupted) return false;
     const ms = Date.now() - t0;
-    // Failure = non-zero exit, or a very short output that is only a quota/limit message.
+    // Failure = non-zero exit, an error result, or a very short output that is only a quota/limit message.
     // (Long outputs may legitimately mention "rate limit", e.g. when the task is to add login throttling.)
-    const limited = code !== 0 || (tail.trim().length < 600 && LIMIT_RE.test(tail));
-    state.history.push({ lane, engine, model: model || 'default', ms, ok: !limited, at: new Date().toISOString(), log: logFile });
+    const failed = timedOut || code !== 0 || metrics.isError || (tail.trim().length < 600 && LIMIT_RE.test(tail));
+    state.history.push({ lane, engine, model: model || 'default', ms, ok: !failed, at: new Date().toISOString(), log: logFile, ...metrics });
     saveState(state);
 
-    if (!limited) {
-      if (lane === 'build') state.builtBy = engine;
+    if (!failed) {
+      if (lane === 'build') {
+        state.builtBy = engine;
+        if (opts.pending) opts.pending.build = { engine, dirtyBefore };
+        else commitBuild(engine, dirtyBefore, opts.round);
+      }
       state.done = unique([...state.done, lane]);
       saveState(state);
-      log(`${green('✔')} ${lane} ${dim(`(${engine}, ${fmtMs(ms)})`)}`);
+      log(`${green('✔')} ${lane} ${dim(`(${engine}, ${fmtMs(ms)}${fmtMetrics(metrics)})`)}`);
       return true;
     }
-    const quota = LIMIT_RE.test(tail.slice(-1500));
-    if (quota) { state.cooldown = { ...(state.cooldown || {}), [engine]: new Date().toISOString() }; saveState(state); }
-    warn(`${lane}: ${engine} dừng (exit ${code}${quota ? ', có vẻ hết quota/rate limit' : ''}). Chuyển engine tiếp theo…`);
+    if (timedOut) {
+      // a longer run on another engine would only burn more quota: let the human look first
+      err(`${lane}: quá ${LANE_TIMEOUT_MS / 60_000} phút nên đã dừng. Xem ${logFile}. Chia nhỏ plan.md hoặc tăng LANE_TIMEOUT_MIN, rồi chạy: pnpm ai ${feature}`);
+      return false;
+    }
+    const end = tail.slice(-1500);
+    const quota = LIMIT_RE.test(end);
+    const unavailable = !quota && UNAVAILABLE_RE.test(end);
+    if (quota || unavailable) { state.cooldown = { ...(state.cooldown || {}), [engine]: new Date().toISOString() }; saveState(state); }
+    const why = quota ? ', có vẻ hết quota/rate limit' : unavailable ? `, không truy cập được (mạng/key/đăng nhập). Bỏ qua ${engine} trong ${COOLDOWN_MS / 60_000} phút; tắt hẳn bằng DISABLED_ENGINES=${engine}` : '';
+    warn(`${lane}: ${engine} dừng (exit ${code}${why}). Chuyển engine tiếp theo…`);
     previous = engine;
   }
   err(`${lane}: hết engine dự phòng. Xem log trong ${dir}/logs/ rồi chạy lại: pnpm ai ${feature}`);
   return false;
+}
+
+// Model for an engine in a lane: the lane's MODEL_* only applies to its primary engine;
+// fallbacks use the engine default, so a fallback never silently lands on the most expensive model.
+function modelFor(lane, engine) {
+  const key = laneKey(lane);
+  const primary = cfg[`ENGINE_${key}`] || 'claude';
+  if (engine === primary && cfg[`MODEL_${key}`]) return cfg[`MODEL_${key}`];
+  return { claude: cfg.DEFAULT_MODEL_CLAUDE, codex: cfg.DEFAULT_MODEL_CODEX, deepseek: cfg.DEEPSEEK_MODEL }[engine] || '';
 }
 
 function buildPrompt(state, lane, { previous, extra }) {
@@ -247,50 +307,207 @@ function spawnEngine(engine, model, fullPrompt, lane, { prefix }) {
   // Windows shells mangle long multi-line arguments: hand the agent a one-line pointer to the prompt file instead.
   const win = process.platform === 'win32';
   const prompt = win ? `Read the file ${base.replace(/\\/g, '/')}.prompt.md and follow its instructions exactly.` : fullPrompt;
-  let [cmd, argv] = engineCommand(engine, model, prompt);
+  const json = METRICS && (engine === 'claude' || engine === 'deepseek-cc'); // stream-json gives tokens, cost and turns
+  let [cmd, argv] = engineCommand(engine, model, prompt, { json });
   if (win) argv = argv.map((a) => (/\s/.test(a) ? `"${a}"` : a));
 
-  const out = fs.createWriteStream(logFile);
+  const out = fs.createWriteStream(logFile); // human-readable log
+  const raw = json ? fs.createWriteStream(`${base}.jsonl`) : null; // raw events, for debugging
   out.write(`$ ${cmd} ${argv.map((a) => (a.includes(' ') ? JSON.stringify(a.slice(0, 80) + (a.length > 80 ? '…' : '')) : a)).join(' ')}\n\n`);
 
   return new Promise((resolve) => {
     let tail = '';
-    let child;
-    try {
-      child = spawn(cmd, argv, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, shell: win });
-    } catch (e) {
-      out.end(String(e));
-      return resolve({ code: 127, tail: String(e), logFile });
-    }
-    const onData = (buf) => {
-      const s = buf.toString();
+    let buf = '';
+    let timedOut = false;
+    const metrics = {};
+    const emit = (s) => {
+      if (!s) return;
       out.write(s);
       tail = (tail + s).slice(-4000);
       if (flags.quiet) return;
-      const text = prefix ? s.replace(/^(?=.)/gm, dim(`[${prefix}] `)) : s;
-      process.stdout.write(text);
+      process.stdout.write(prefix ? s.replace(/^(?=.)/gm, dim(`[${prefix}] `)) : s);
     };
-    child.stdout.on('data', onData);
-    child.stderr.on('data', onData);
+    const onJsonLine = (line) => {
+      if (!line.trim()) return;
+      let ev;
+      try { ev = JSON.parse(line); } catch { return emit(line + '\n'); }
+      emit(renderClaudeEvent(ev, metrics));
+    };
+
+    let child;
+    try {
+      // own process group on Linux/macOS so Ctrl+C / timeout can stop the whole tree (dev servers included)
+      child = spawn(cmd, argv, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, shell: win, detached: !win });
+    } catch (e) {
+      out.end(String(e));
+      return resolve({ code: 127, tail: String(e), logFile, metrics, timedOut });
+    }
+    children.add(child);
+    const timer = LANE_TIMEOUT_MS
+      ? setTimeout(() => { timedOut = true; emit(`\n[orchestrator] quá ${LANE_TIMEOUT_MS / 60_000} phút, dừng engine.\n`); killTree(child); }, LANE_TIMEOUT_MS)
+      : null;
+
+    child.stdout.on('data', (b) => {
+      if (!json) return emit(b.toString());
+      raw.write(b);
+      buf += b.toString();
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) { onJsonLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    });
+    child.stderr.on('data', (b) => emit(b.toString()));
     child.on('error', (e) => { tail += String(e); });
-    child.on('close', (code) => { out.end(); resolve({ code: code ?? 1, tail, logFile }); });
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      children.delete(child);
+      if (buf) onJsonLine(buf);
+      if (!json) Object.assign(metrics, textMetrics(tail));
+      out.end();
+      raw?.end();
+      resolve({ code: code ?? 1, tail, logFile, metrics, timedOut });
+    });
   });
 }
 
-function engineCommand(engine, model, prompt) {
+// Claude Code --output-format stream-json: show text and tool calls, collect usage from the final result event.
+function renderClaudeEvent(ev, m) {
+  if (ev.type === 'assistant' && Array.isArray(ev.message?.content)) {
+    return ev.message.content.map((b) => {
+      if (b.type === 'text' && b.text?.trim()) return b.text.trim() + '\n';
+      if (b.type === 'tool_use') return `  · ${b.name} ${toolHint(b.input)}\n`;
+      return '';
+    }).join('');
+  }
+  if (ev.type === 'result') {
+    const u = ev.usage || {};
+    m.tokensIn = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+    m.tokensOut = u.output_tokens || 0;
+    if (typeof ev.total_cost_usd === 'number') m.costUsd = ev.total_cost_usd;
+    if (ev.num_turns) m.turns = ev.num_turns;
+    m.isError = Boolean(ev.is_error);
+    return ev.is_error ? `${ev.result || ev.subtype || 'error'}\n` : '';
+  }
+  return '';
+}
+function toolHint(input = {}) {
+  const v = input.command || input.file_path || input.path || input.pattern || input.description || input.prompt || '';
+  const one = String(v).replace(/\s+/g, ' ').trim();
+  return one.length > 100 ? one.slice(0, 100) + '…' : one;
+}
+// Codex prints "tokens used <n>" at the end of `codex exec`.
+function textMetrics(text) {
+  const m = text.match(/tokens used\W*([\d][\d,.]*)/i);
+  return m ? { tokensTotal: Number(m[1].replace(/[,.]/g, '')) } : {};
+}
+
+function killTree(child, force = false) {
+  if (!child?.pid || child.exitCode !== null) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    return;
+  }
+  try { process.kill(-child.pid, force ? 'SIGKILL' : 'SIGTERM'); } catch { try { child.kill('SIGTERM'); } catch {} }
+  if (!force) setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }, 4000).unref();
+}
+
+function engineCommand(engine, model, prompt, { json } = {}) {
+  const claudeOut = json ? ['--output-format', 'stream-json', '--verbose'] : [];
   switch (engine) {
     case 'claude':
-      return ['claude', ['-p', prompt, '--permission-mode', 'acceptEdits', ...(model ? ['--model', model] : [])]];
+      return ['claude', ['-p', prompt, '--permission-mode', 'acceptEdits', ...claudeOut, ...(model ? ['--model', model] : [])]];
     case 'codex':
       return ['codex', ['exec', '--sandbox', cfg.CODEX_SANDBOX || 'workspace-write', ...(model ? ['-m', model] : []), prompt]];
     case 'deepseek':
       return ['opencode', ['run', '-m', model || cfg.DEEPSEEK_MODEL || 'deepseek/deepseek-v4-flash', prompt]];
     case 'deepseek-cc':
       if (!cfg.DEEPSEEK_CC_SETTINGS) die('Set DEEPSEEK_CC_SETTINGS in .agents/models.env to use engine deepseek-cc');
-      return ['claude', ['--settings', cfg.DEEPSEEK_CC_SETTINGS, '-p', prompt, '--permission-mode', 'acceptEdits']];
+      return ['claude', ['--settings', cfg.DEEPSEEK_CC_SETTINGS, '-p', prompt, '--permission-mode', 'acceptEdits', ...claudeOut]];
     default:
       die(`Unknown engine: ${engine}`);
   }
+}
+
+// ---------- build commits (Codex's sandbox cannot write .git, so the orchestrator commits for it) ----------
+function commitBuild(engine, dirtyBefore, round) {
+  if (!AUTO_COMMIT_BUILD) return;
+  const planned = planPaths();
+  const inPlan = (f) => planned.some((p) => f === p || (p.endsWith('/') && f.startsWith(p)) || (p.includes('*') && f.startsWith(p.slice(0, p.indexOf('*')))));
+  // files that were already dirty before the lane belong to someone else, unless the plan names them
+  const files = gitChanged().filter((f) => !dirtyBefore.includes(f) || inPlan(f));
+  if (!files.length) return;
+  const outside = planned.length ? files.filter((f) => !inPlan(f)) : [];
+  spawnSync('git', ['add', '--', ...files], { stdio: 'ignore' });
+  const msg = `feat(${feature}): ${round ? `fix round ${round}` : 'build'} by ${engine}`;
+  const body = outside.length ? `\n\nFiles outside plan.md: ${outside.join(', ')}` : '';
+  const r = spawnSync('git', ['commit', '-q', '-m', msg + body, '--', ...files], { encoding: 'utf8' });
+  if (r.status === 0) log(dim(`  git commit: ${msg} (${files.length} file)`));
+  else warn(`Không commit được thay đổi của build: ${(r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' ')}`);
+  if (outside.length) warn(`Build sửa file ngoài plan.md: ${outside.join(', ')}. Verify sẽ xem xét.`);
+  commitArtifacts(`docs(${feature}): build notes`);
+}
+
+function planPaths() {
+  const plan = readIf(path.join(dir, 'plan.md'));
+  return unique([...plan.matchAll(/`([^`\s]+\/[^`\s]*)`/g)].map((m) => m[1].replace(/^\.\//, '')));
+}
+
+// changed + untracked files under apps/ and packages/ (feature code), as repo-relative paths
+function gitChanged() {
+  const r = spawnSync('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--', 'apps', 'packages'], { encoding: 'utf8' });
+  const parts = (r.stdout || '').split('\0').filter(Boolean);
+  const files = [];
+  for (let i = 0; i < parts.length; i++) {
+    const st = parts[i].slice(0, 2);
+    files.push(parts[i].slice(3));
+    if (st[0] === 'R' || st[0] === 'C') i++; // skip the "from" path of a rename/copy
+  }
+  return files;
+}
+
+// HEAD + working-tree diff of feature code: if a fix round leaves this unchanged, looping again is pointless
+function codeFingerprint() {
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout || '';
+  const diff = spawnSync('git', ['diff', 'HEAD', '--', 'apps', 'packages'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).stdout || '';
+  return createHash('sha1').update(head + diff + gitChanged().join('\n')).digest('hex');
+}
+
+// ---------- verify pre-check: stale dev servers make Playwright reuse old code ----------
+async function runVerify(state) {
+  const busy = [];
+  for (const port of VERIFY_PORTS) if (await portBusy(port)) busy.push(port);
+  if (busy.length && BUSY_PORTS !== 'ignore') {
+    const pids = unique(busy.flatMap(pidsOnPort));
+    warn(`Cổng ${busy.join(', ')} đang có server chạy${pids.length ? ` (PID ${pids.join(', ')})` : ''}. Playwright sẽ dùng lại server cũ, kết quả e2e có thể sai.`);
+    let choice = BUSY_PORTS === 'kill' ? 'k' : flags.yes ? 'c' : '';
+    while (!['k', 'c', 'q'].includes(choice)) choice = (await ask('  [k] dừng các server này   [c] vẫn chạy verify   [q] dừng orchestrator\n  > ')).toLowerCase() || 'q';
+    if (choice === 'q') return false;
+    if (choice === 'k') {
+      for (const pid of pids) {
+        if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        else { try { process.kill(pid, 'SIGTERM'); } catch {} }
+      }
+      log(dim(`  đã dừng PID ${pids.join(', ') || '(không tìm thấy PID, hãy tự dừng)'}`));
+    }
+  }
+  return runLane(state, 'verify');
+}
+
+function portBusy(port) {
+  return new Promise((resolve) => {
+    const s = net.connect({ port, host: '127.0.0.1' });
+    const done = (v) => { s.destroy(); resolve(v); };
+    s.once('connect', () => done(true));
+    s.once('error', () => done(false));
+    s.setTimeout(800, () => done(false));
+  });
+}
+
+function pidsOnPort(port) {
+  if (process.platform === 'win32') {
+    const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' }).stdout || '';
+    return out.split(/\r?\n/).filter((l) => /LISTENING/i.test(l) && new RegExp(`:${port}\\s`).test(l)).map((l) => Number(l.trim().split(/\s+/).pop())).filter(Boolean);
+  }
+  const out = spawnSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout || '';
+  return out.split(/\s+/).map(Number).filter(Boolean);
 }
 
 // ---------- gates ----------
@@ -340,36 +557,63 @@ function approve(state, gate) {
 // ---------- verify / security loop ----------
 async function qualityLoop(state, profile) {
   const sec = needSecurity(state, profile);
-  if (sec && !state.done.includes('security')) {
-    if (!(await runLane(state, 'security'))) return 'stop';
-  }
-
   const review = verdictOf('review.md');
-  const security = sec ? verdictOf('security.md') : 'pass';
-  const blocked = review === 'back-to-build' || security === 'blockers';
-  const unknown = review === null || (sec && security === null);
 
-  if (unknown && !blocked) {
-    warn('Không tìm thấy dòng VERDICT trong review.md/security.md.');
-    if (!flags.yes) {
-      const a = (await ask('  Coi như đạt và đi tiếp? [y/n] ')).toLowerCase();
-      if (a !== 'y') return 'stop';
+  // environment problems (permissions, busy ports, DB down, network) cannot be fixed by the build agent
+  if (review === 'blocked-env') {
+    err('Verify bị chặn bởi môi trường, không phải lỗi code. Không quay lại build.');
+    const todo = section(path.join(dir, 'review.md'), 'Cần người xử lý');
+    if (todo) log(todo.replace(/^/gm, '  '));
+    log(dim(`  Xử lý xong rồi chạy: pnpm ai ${feature} --from verify`));
+    return 'stop';
+  }
+  if (review === null && !(await acceptUnknown('review.md'))) return 'stop';
+
+  // security only reviews code that verify already accepted: no point reviewing code that goes back to build
+  if (review !== 'back-to-build') {
+    if (sec && !state.done.includes('security')) {
+      if (!(await runLane(state, 'security'))) return 'stop';
+    }
+    const security = sec ? verdictOf('security.md') : 'pass';
+    if (sec && security === null && !(await acceptUnknown('security.md'))) return 'stop';
+    if (security !== 'blockers') {
+      log(green('✔ Review đạt') + dim(` (review: ${review ?? '?'}${sec ? `, security: ${security ?? '?'}` : ''})`));
+      return 'continue';
     }
   }
-  if (!blocked) { log(green('✔ Review đạt') + dim(` (review: ${review ?? '?'}${sec ? `, security: ${security ?? '?'}` : ''})`)); return 'continue'; }
 
+  const fromSec = review !== 'back-to-build';
   if (state.fixRounds >= MAX_FIX_ROUNDS) {
-    err(`Vẫn còn blocker sau ${MAX_FIX_ROUNDS} vòng sửa. Đọc ${dir}/review.md${sec ? ` và ${dir}/security.md` : ''}, quyết định rồi chạy: pnpm ai ${feature} --from build`);
+    err(`Vẫn còn blocker sau ${MAX_FIX_ROUNDS} vòng sửa. Đọc ${dir}/${fromSec ? 'security.md' : 'review.md'}, quyết định rồi chạy: pnpm ai ${feature} --from build`);
     return 'stop';
   }
   state.fixRounds += 1;
   log(yellow(bold(`\n↺ Vòng sửa ${state.fixRounds}/${MAX_FIX_ROUNDS}: quay lại build`)));
   state.done = state.done.filter((l) => !['build', 'verify', 'security'].includes(l));
   saveState(state);
-  const fix = `Fix round ${state.fixRounds}: fix every blocker and major finding in ${dir}/review.md${sec ? ` and ${dir}/security.md` : ''}. Only those, then stop.`;
-  if (!(await runLane(state, 'build', { extra: fix }))) return 'stop';
-  if (!(await runLane(state, 'verify'))) return 'stop';
+  const src = fromSec ? `${dir}/security.md` : `${dir}/review.md`;
+  const fix = `Fix round ${state.fixRounds}: fix every blocker and major finding in ${src}. Only those, then stop.`;
+  const before = codeFingerprint();
+  if (!(await runLane(state, 'build', { extra: fix, round: state.fixRounds }))) return 'stop';
+  if (codeFingerprint() === before) {
+    err(`Vòng sửa ${state.fixRounds} không thay đổi code nào. Lặp lại chỉ tốn quota.`);
+    log(dim(`  Đọc ${src} và ${dir}/status.md: thường là việc cần người (quyền, môi trường, quyết định). Xong rồi chạy: pnpm ai ${feature} --from verify`));
+    return 'stop';
+  }
+  if (!(await runVerify(state))) return 'stop';
   return qualityLoop(state, profile);
+}
+
+async function acceptUnknown(file) {
+  warn(`Không tìm thấy dòng VERDICT trong ${file}.`);
+  if (flags.yes) return true;
+  return (await ask('  Coi như đạt và đi tiếp? [y/n] ')).toLowerCase() === 'y';
+}
+
+// text of a "## <title>" section, up to the next heading
+function section(file, title) {
+  const m = readIf(file).match(new RegExp(`^##\\s+${title}[^\\n]*\\n([\\s\\S]*?)(?=^#|^\\s*VERDICT:|(?![\\s\\S]))`, 'm'));
+  return m ? m[1].trim() : '';
 }
 
 function verdictOf(file) {
@@ -403,20 +647,23 @@ function printPlan(state, profile) {
     .map((lane) => {
       const key = laneKey(lane);
       const engine = cfg[`ENGINE_${key}`] || 'claude';
-      const model = cfg[`MODEL_${key}`] || 'default';
-      const fb = unique(splitList(cfg[`FALLBACK_${key}`] ?? cfg.FALLBACK_DEFAULT ?? 'claude codex deepseek')).filter((e) => e !== engine);
+      const model = modelFor(lane, engine) || 'default';
+      const fb = unique(splitList(cfg[`FALLBACK_${key}`] ?? cfg.FALLBACK_DEFAULT ?? 'claude codex deepseek')).filter((e) => e !== engine && !DISABLED.has(e));
       const gate = profile.gates[lane] ? yellow(` ⏸ ${profile.gates[lane]}`) : '';
       const skipSec = lane === 'security' && !needSecurity(state, profile);
       const cond = skipSec ? dim(state.done.includes('intake') ? ' (bỏ qua: không có rủi ro)' : ' (chỉ chạy nếu intake gắn cờ rủi ro)') : '';
       const done = state.done.includes(lane) ? green(' ✔') : '';
-      return `  ${lane.padEnd(10)} ${(engineColor[engine] || ((s) => s))(engine.padEnd(9))} ${dim(model.padEnd(28))} ${dim('fallback: ' + (fb.join(' → ') || '-'))}${gate}${cond}${done}`;
+      const off = DISABLED.has(engine) ? red(' (tắt → dùng fallback)') : '';
+      return `  ${lane.padEnd(10)} ${(engineColor[engine] || ((s) => s))(engine.padEnd(9))}${off} ${dim(model.padEnd(28))} ${dim('fallback: ' + (fb.join(' → ') || '-'))}${gate}${cond}${done}`;
     });
   log(bold(`\n  Profile: ${profile.name}`) + (state.risks?.length ? yellow(`  · rủi ro: ${state.risks.join(', ')}`) : '') + dim(`  · tối đa ${MAX_FIX_ROUNDS} vòng sửa`));
   log(rows.join('\n'));
+  log(dim(`  Giới hạn mỗi lane: ${LANE_TIMEOUT_MS ? LANE_TIMEOUT_MS / 60_000 + ' phút' : 'không'}${DISABLED.size ? ` · tắt: ${[...DISABLED].join(', ')}` : ''}`));
 }
 
 function finish(state, outcome) {
-  const rows = state.history.map((h) => `| ${h.lane} | ${h.engine} | ${h.model} | ${fmtMs(h.ms)} | ${h.ok ? 'ok' : 'chuyển engine'} |`);
+  const rows = state.history.map((h) => `| ${h.lane} | ${h.engine} | ${h.model} | ${fmtMs(h.ms)} | ${fmtTokens(h) || '-'} | ${h.costUsd != null ? '$' + h.costUsd.toFixed(2) : '-'} | ${h.ok ? 'ok' : 'chuyển engine / dừng'} |`);
+  const tot = totals(state.history);
   const md = [
     `# Run summary — ${feature}`,
     '',
@@ -425,21 +672,25 @@ function finish(state, outcome) {
     `- Gate đã duyệt: ${Object.keys(state.gates).join(', ') || 'chưa'}`,
     `- Vòng sửa: ${state.fixRounds}`,
     `- Engine build: ${state.builtBy || '-'}`,
+    `- Tổng: ${fmtMs(tot.ms)} · ${fmtK(tot.tokens)} token${tot.cost ? ` · ~$${tot.cost.toFixed(2)} (giá API tương đương do Claude Code báo; gói Pro không tính tiền nhưng con số này phản ánh mức tiêu quota)` : ''}`,
     '',
-    '| Lane | Engine | Model | Thời gian | Kết quả |',
-    '| --- | --- | --- | --- | --- |',
+    '| Lane | Engine | Model | Thời gian | Token | Chi phí API ước tính | Kết quả |',
+    '| --- | --- | --- | --- | --- | --- | --- |',
     ...rows,
+    '',
+    'Token = input (kể cả cache) + output. Codex chỉ báo tổng; OpenCode/DeepSeek chưa có số.',
     '',
   ].join('\n');
   fs.writeFileSync(path.join(dir, 'run-summary.md'), md);
   commitArtifacts(`docs(${feature}): run ${outcome}`);
 
   log('\n' + bold(outcome === 'done' ? green('◆ Xong') : yellow(`◆ Dừng: ${outcome}`)));
-  for (const h of state.history) log(`  ${h.ok ? green('✔') : yellow('↷')} ${h.lane.padEnd(10)} ${h.engine.padEnd(9)} ${dim(fmtMs(h.ms))}`);
+  for (const h of state.history) log(`  ${h.ok ? green('✔') : yellow('↷')} ${h.lane.padEnd(10)} ${h.engine.padEnd(9)} ${dim(fmtMs(h.ms) + fmtMetrics(h))}`);
+  log(bold(`  Tổng: ${fmtMs(tot.ms)} · ${fmtK(tot.tokens)} token${tot.cost ? ` · ~$${tot.cost.toFixed(2)}` : ''}`));
   log(dim(`  Tóm tắt: ${dir}/run-summary.md`));
   if (outcome !== 'done') log(dim(`  Chạy tiếp: pnpm ai ${feature}`));
   else if (fs.existsSync(path.join(dir, 'pr.md'))) log(dim(`  Tạo PR: gh pr create --body-file ${dir}/pr.md`));
-  process.exit(outcome === 'done' ? 0 : 2);
+  process.exit(outcome === 'done' ? 0 : outcome === 'interrupted' ? 130 : 2);
 }
 
 // ---------- state & files ----------
@@ -499,6 +750,16 @@ function readIf(f) { try { return fs.readFileSync(f, 'utf8'); } catch { return '
 function countLines(f) { return readIf(f).split('\n').length; }
 function tailLines(f, n) { return readIf(f).trimEnd().split('\n').filter((l) => !l.startsWith('$ ')).slice(-n).join('\n').replace(/^\s*\n/, ''); }
 function stamp() { return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-'); }
+function fmtK(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0); }
+function tokensOf(h) { return h.tokensTotal ?? ((h.tokensIn || 0) + (h.tokensOut || 0)); }
+function fmtTokens(h) { const t = tokensOf(h); return t ? fmtK(t) : ''; }
+function fmtMetrics(m) {
+  const parts = [fmtTokens(m) && `${fmtTokens(m)} tok`, m.costUsd != null && `~$${m.costUsd.toFixed(2)}`, m.turns && `${m.turns} lượt`].filter(Boolean);
+  return parts.length ? ', ' + parts.join(', ') : '';
+}
+function totals(hist) {
+  return hist.reduce((a, h) => ({ ms: a.ms + (h.ms || 0), tokens: a.tokens + tokensOf(h), cost: a.cost + (h.costUsd || 0) }), { ms: 0, tokens: 0, cost: 0 });
+}
 function fmtMs(ms) { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`; }
 function log(s) { process.stdout.write(s + '\n'); }
 function warn(s) { process.stdout.write(yellow('⚠ ' + s) + '\n'); }

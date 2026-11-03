@@ -15,7 +15,11 @@ description: Lane 3 Developer. Use after G2 to implement plan.md task by task wi
 3. Implement the smallest change that passes. Stay inside the task's files; if you must touch another file, note it in `status.md`.
 4. Run the task's check command, then `pnpm lint && pnpm typecheck`.
 5. Stage only the files of this task (`git add <files>`, never `git add -A`; QA may be writing tests in parallel). Commit: `feat(<feature>): Tn <what>`. Tick the task in `plan.md`.
+   If `git add`/`git commit` is not allowed (e.g. Codex sandbox, `.git/index.lock: Permission denied`), do not retry or work around it: tick the task and go on. The orchestrator commits your changes after the lane.
 6. Update `status.md` (handoff skill) every 2–3 tasks, so another engine can continue if you stop.
+
+## Environment blockers
+If something outside the code blocks you (DB down, port busy, no network, permission denied), stop trying after one attempt, write it under "Đang chờ người" in `status.md` with the command the human should run, and finish the tasks you can.
 
 ## Never
 - Edit QA-owned test files to make them pass; if one looks wrong, write it in `status.md`.

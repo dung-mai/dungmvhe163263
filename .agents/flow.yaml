@@ -13,7 +13,8 @@ profiles:
     gates: [G1, G2, G3]
 
 default_profile: standard
-# security runs after verify for every profile when a risk trigger matches (risk beats profile).
+# security runs after verify when profile is full or a risk in SECURITY_RISKS (models.env) matches,
+# and only once verify says ready (no point reviewing code that goes back to build).
 # The orchestrator (pnpm ai) implements exactly this file; keep them in sync.
 
 # If the change touches any of these, switch the listed steps ON regardless of profile.
@@ -24,14 +25,18 @@ risk_triggers:
     keywords: [login, password, role, admin, session, jwt, token, permission]
     turn_on: [security, e2e]
   money:
-    paths: ["apps/api/src/modules/promotions/**", "apps/api/src/modules/*/domain/*price*", "**/checkout/**",
+    # Only when the change computes, changes or charges money. Reading, sorting, filtering or displaying
+    # the existing effective price does NOT match (that is a normal feature, note it in the brief).
+    paths: ["apps/api/src/modules/promotions/**/domain/**", "apps/api/src/modules/*/domain/*price*", "**/checkout/**",
             "apps/storefront/features/cart/**", "apps/storefront/lib/formatters.ts"]
-    keywords: [price, discount, checkout, payment, VND]
+    keywords: [discount rule, checkout, payment, refund, cart total, price calculation]
     turn_on: [security, e2e, design]
   data_model:
     paths: ["apps/api/prisma/schema.prisma", "apps/api/prisma/seed.ts"]
     turn_on: [design]
   public_contract:
+    # Only breaking changes: rename/remove a field, change a type, change error shape.
+    # Adding an optional field or a new enum-like query value is additive: not a match.
     paths: ["packages/contracts/src/**"]
     turn_on: [design]
 

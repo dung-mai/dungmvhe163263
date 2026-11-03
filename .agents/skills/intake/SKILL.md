@@ -13,8 +13,8 @@ description: Lane 0 router. Use when a new feature request arrives or work/<feat
 ## Steps
 1. Read the request. Restate it in one sentence at the top of "Phân loại".
 2. Find the likely touched areas with a quick search (prefer the `explorer` subagent if you are Claude Code). Do not read whole files.
-3. Match `risk_triggers` by path and keyword. List every trigger that matches and the steps it turns on.
-4. Pick a profile: start from `default_profile`; go down to `vibe` only if no risk trigger matches and size is S; go up to `full` if two or more triggers match or the user says the change is client-facing.
+3. Match `risk_triggers` by path and keyword, and read each trigger's comment: a keyword alone is not a match (e.g. sorting by price does not change money). List only real matches and the steps they turn on; mention near-misses in one line.
+4. Pick a profile: start from `default_profile`; go down to `vibe` only if no risk trigger matches and size is S; go up to `full` only if `auth_or_roles` or `money` matches together with another trigger, or the user says the change is client-facing. Read-only or additive changes stay `standard` or `vibe`.
 5. Fill the brief: profile + reason, risk flags, lanes that will run, gates, size S/M/L, open questions (max 3).
 6. Create `status.md` from `.agents/templates/status.md` if missing.
 
